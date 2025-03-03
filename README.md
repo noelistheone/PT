@@ -1,5 +1,10 @@
-# PT4Rec
-## PT4Rec: A Universal Prompt-Tuning Framework for Graph Contrastive Learning-Based Recommendations (ACML2024 & Machine Learning Journal)
+<h1> PT4Rec: A Universal Prompt-Tuning Framework for Graph Contrastive Learning-Based Recommendations</h1>
+<div style="text-align: center;">
+
+[Wei Xiao](https://xiaowei-i.github.io)$^{1}$, [Qifeng Zhou]$^{1}$ 
+
+$^1$ Xiamen University,
+
 ![image](https://github.com/Blank141/PT4Rec/blob/main/fig1_1.png)
 ## Requirements
 ```
@@ -18,3 +23,19 @@ run main.py
 ### Other Related Projects
 The code repository references [SELFRec](https://github.com/Coder-Yu/SELFRec) and [CPTPP](https://github.com/Haoran-Young/CPTPP).
 Thanks a lot for their work!
+
+
+If you find this codebase useful, consider citing:
+
+```bibtex
+@article{xiao2025pt4rec,
+  title={PT4Rec: a universal prompt-tuning framework for graph contrastive learning-based recommendations},
+  author={Xiao, Wei and Zhou, Qifeng},
+  journal={Machine Learning},
+  volume={114},
+  number={3},
+  pages={1--20},
+  year={2025},
+  publisher={Springer}
+}
+```
