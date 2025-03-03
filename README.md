@@ -1,6 +1,9 @@
 <h1> PT4Rec: A Universal Prompt-Tuning Framework for Graph Contrastive Learning-Based Recommendations</h1>
 <div style="text-align: center;">
+
 [Wei Xiao](https://xiaowei-i.github.io), Qifeng Zhou
+
+[Paper](https://link.springer.com/article/10.1007/s10994-024-06658-0)
   
 ![image](https://github.com/Blank141/PT4Rec/blob/main/fig1_1.png)
 ## Requirements
