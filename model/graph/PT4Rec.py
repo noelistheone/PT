@@ -8,25 +8,27 @@ from base.graph_recommender import GraphRecommender
 from util.conf import OptionConf
 from util.sampler import next_batch_pairwise
 from base.torch_interface import TorchGraphInterface
-from util.loss_torch import bpr_loss, l2_reg_loss, InfoNCE
+from util.loss_torch import bpr_loss, l2_reg_loss, InfoNCE, triplet_loss, batch_softmax_loss
 from data.augmentor import GraphAugmentor
 from torchnmf.nmf import NMF
 import numpy as np
 from model.graph.XSimGCL import XSimGCL_Encoder
 from model.graph.SimGCL import SimGCL_Encoder
+from model.graph.SELFRec import DNN_Encoder
 
 
 # 重写prompts生成方式 train和save
-class CPMP(GraphRecommender):
+class PT4Rec(GraphRecommender):
     def __init__(self, conf, training_set, test_set):
-        super(CPMP, self).__init__(conf, training_set, test_set)
+        super(PT4Rec, self).__init__(conf, training_set, test_set)
 
-        args = OptionConf(self.config['CPMP'])
+        args = OptionConf(self.config['PT4Rec'])
         self.n_layers = int(args['-n_layer'])
         temp = float(args['-temp'])
         prompt_size = int(args['-prompt_size'])
         self.user_prompt_num = int(args['-user_prompt_num'])
         self.pretrain_model = args['-pretrain_model']
+        
 
         self.user_prompt_H = True
         self.user_prompt_M = True
@@ -39,6 +41,8 @@ class CPMP(GraphRecommender):
         elif self.pretrain_model == 'SimGCL':
             self.model = SimGCL_Encoder(self.data, self.emb_size, eps=0.1, n_layers=3)
 
+        self.model_besides = DNN_Encoder(self.data, self.emb_size, drop_rate=0.1, temperature=temp)
+
         if self.user_prompt_num != 0:         
             self.user_prompt_generator = [Prompts_Generator(self.emb_size, prompt_size).cuda() for _ in range(self.user_prompt_num)]
             self.user_attention = Attention(prompt_size, self.user_prompt_num).cuda()
@@ -46,6 +50,8 @@ class CPMP(GraphRecommender):
         self.interaction_mat = TorchGraphInterface.convert_sparse_mat_to_tensor(self.data.interaction_mat).cuda()
         self.user_matrix, self.Item_matrix = self._adjacency_matrix_factorization()
         self.sparse_norm_adj = TorchGraphInterface.convert_sparse_mat_to_tensor(self.data.norm_adj).cuda()
+
+        
 
     def XSimGCL_pre_train(self):
         # 若已有预训练模型，则直接加载
@@ -58,6 +64,7 @@ class CPMP(GraphRecommender):
         #     print('No pretrained model, start pre-training...')
 
         pre_trained_model = self.model.cuda()
+        model_sec = self.model_besides.cuda()
         optimizer = torch.optim.Adam(pre_trained_model.parameters(), lr=self.lRate)
 
         print('############## Pre-Training Phase ##############')
@@ -66,7 +73,10 @@ class CPMP(GraphRecommender):
                 user_idx, pos_idx, neg_idx = batch
                 rec_user_emb, rec_item_emb, cl_user_emb, cl_item_emb  = pre_trained_model(True)
                 cl_loss = pre_trained_model.cal_cl_loss([user_idx,pos_idx],rec_user_emb,cl_user_emb,rec_item_emb,cl_item_emb)
-                batch_loss =  cl_loss
+                query_emb, item_emb = model_sec(user_idx, pos_idx)
+                
+                cl_loss_sec = model_sec.cal_cl_loss(pos_idx)
+                batch_loss =  (cl_loss + cl_loss_sec) / 2
                 # Backward and optimize
                 optimizer.zero_grad()
                 batch_loss.backward()
@@ -79,13 +89,13 @@ class CPMP(GraphRecommender):
 
     def SimGCL_pre_train(self):
         # 若已有预训练模型，则直接加载
-        try:
-            self.model.load_state_dict(torch.load('./pretrained_model/SimGCL_douban_pretrain_20.pt'))
-            print('############## Pre-Training Phase ##############')
-            print('Load pretrained model successfully!')
-            return
-        except:
-            print('No pretrained model, start pre-training...')
+        # try:
+        #     self.model.load_state_dict(torch.load('./pretrained_model/SimGCL_douban_pretrain_20.pt'))
+        #     print('############## Pre-Training Phase ##############')
+        #     print('Load pretrained model successfully!')
+        #     return
+        # except:
+        #     print('No pretrained model, start pre-training...')
 
         pre_trained_model = self.model.cuda()
         optimizer = torch.optim.Adam(pre_trained_model.parameters(), lr=self.lRate)
@@ -104,7 +114,7 @@ class CPMP(GraphRecommender):
                     print('pre-training:', epoch + 1, 'batch', n, 'cl_loss', cl_loss.item())
 
         # save pre-trained model
-        torch.save(pre_trained_model.state_dict(), './pretrained_model/SimGCL_gowalla_pretrain_20.pt')    
+        # torch.save(pre_trained_model.state_dict(), './pretrained_model/SimGCL_gowalla_pretrain_20.pt')    
 
     def _csr_to_pytorch_dense(self, csr):
         array = csr.toarray()
@@ -146,6 +156,15 @@ class CPMP(GraphRecommender):
         user_profiles, item_profiles = torch.split(all_embeddings, [self.data.user_num, self.data.item_num])
         return user_profiles, item_profiles
 
+    def loss_fn(self, p, z):  # negative cosine similarity
+        return 1 - F.cosine_similarity(p, z.detach(), dim=-1).mean()
+
+    def get_loss(self, u_online, u_target, i_online, i_target):
+        
+        loss_ui = self.loss_fn(u_online, i_target)/2
+        loss_iu = self.loss_fn(i_online, u_target)/2
+        return loss_ui + loss_iu
+
     def train(self):
         if self.pretrain_model == 'XSimGCL':
             self.XSimGCL_pre_train()
@@ -161,19 +180,37 @@ class CPMP(GraphRecommender):
         for epoch in range(self.maxEpoch):
             for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size)):
                 user_emb, item_emb = model()
-
+                # self.u_target_his = torch.randn((self.data.user_num, self.emb_size), requires_grad=False).cuda()
+                # self.i_target_his = torch.randn((self.data.item_num, self.emb_size), requires_grad=False).cuda()
                 prompted_user_emb, prompted_item_emb = self.generate_prompts(user_emb, item_emb)
-
                 user_idx, pos_idx, neg_idx = batch
                 # rec_user_emb, rec_item_emb = model()
                 rec_user_emb = prompted_user_emb
                 rec_item_emb = prompted_item_emb
+                
+                # with torch.no_grad():
+                    
+                #     u_target, i_target = self.u_target_his.clone()[user_idx], self.i_target_his.clone()[pos_idx]
+                #     u_target.detach()
+                #     i_target.detach()
+                #     #
+                #     u_target = u_target * 0.05 + rec_user_emb[user_idx].data * (1. - 0.05)
+                #     i_target = i_target * 0.05 + rec_item_emb[pos_idx].data * (1. - 0.05)
+                #     #
+                #     self.u_target_his[user_idx, :] = rec_user_emb[user_idx].clone()
+                #     self.i_target_his[pos_idx, :] = rec_item_emb[pos_idx].clone()
+
+                
+                
 
                 user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_idx], rec_item_emb[pos_idx], rec_item_emb[neg_idx]
+                rec_loss_sec = batch_softmax_loss(user_emb, pos_item_emb, 0.2)
                 rec_loss = bpr_loss(user_emb, pos_item_emb, neg_item_emb)
-
+                # sf_loss = self.get_loss(self.predictor(rec_user_emb[user_idx]), u_target, self.predictor(rec_item_emb[pos_idx]), i_target)
+                
                 # 第二阶段 不继续训练对比学习权重
-                batch_loss =  rec_loss + l2_reg_loss(self.reg, user_emb, pos_item_emb)
+                batch_loss =  (rec_loss + rec_loss_sec) / 2 + l2_reg_loss(self.reg, user_emb, pos_item_emb)
+                
                 # Backward and optimize
                 
                 batch_loss.backward()
@@ -200,7 +237,9 @@ class CPMP(GraphRecommender):
         # alpha = F.softmax(alpha/8, dim=1)
         # alpha = alpha.cpu().detach().numpy()
         # np.save('XSimGCL_Douban_attention_weight.npy', alpha)
-
+    
+    
+        
     def save(self):
         with torch.no_grad():
             user_emb, item_emb = self.model.forward()
@@ -250,7 +289,8 @@ class Attention(nn.Module):
         prompt = prompt.squeeze(1)  # prompt.shape = [2829, 64]
         return prompt
 
-    
+
+        
 class Prompts_Generator(nn.Module):
     def __init__(self, emb_size, prompt_size):
         super(Prompts_Generator, self).__init__()
