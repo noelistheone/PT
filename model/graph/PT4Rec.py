@@ -73,7 +73,7 @@ class PT4Rec(GraphRecommender):
                 user_idx, pos_idx, neg_idx = batch
                 rec_user_emb, rec_item_emb, cl_user_emb, cl_item_emb  = pre_trained_model(True)
                 cl_loss = pre_trained_model.cal_cl_loss([user_idx,pos_idx],rec_user_emb,cl_user_emb,rec_item_emb,cl_item_emb)
-                query_emb, item_emb = model_sec(user_idx, pos_idx)
+                #query_emb, item_emb = model_sec(user_idx, pos_idx)
                 
                 cl_loss_sec = model_sec.cal_cl_loss(pos_idx)
                 # batch_loss =  (cl_loss + cl_loss_sec) / 2
