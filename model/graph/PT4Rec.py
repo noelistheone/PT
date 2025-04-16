@@ -64,7 +64,7 @@ class PT4Rec(GraphRecommender):
         #     print('No pretrained model, start pre-training...')
 
         pre_trained_model = self.model.cuda()
-        model_sec = self.model_besides.cuda()
+        # model_sec = self.model_besides.cuda()
         optimizer = torch.optim.Adam(pre_trained_model.parameters(), lr=self.lRate)
 
         print('############## Pre-Training Phase ##############')
@@ -76,7 +76,8 @@ class PT4Rec(GraphRecommender):
                 query_emb, item_emb = model_sec(user_idx, pos_idx)
                 
                 cl_loss_sec = model_sec.cal_cl_loss(pos_idx)
-                batch_loss =  (cl_loss + cl_loss_sec) / 2
+                # batch_loss =  (cl_loss + cl_loss_sec) / 2
+                batch_loss = cl_loss #终端4
                 # Backward and optimize
                 optimizer.zero_grad()
                 batch_loss.backward()
@@ -98,6 +99,7 @@ class PT4Rec(GraphRecommender):
         #     print('No pretrained model, start pre-training...')
 
         pre_trained_model = self.model.cuda()
+        model_sec = self.model_besides.cuda()
         optimizer = torch.optim.Adam(pre_trained_model.parameters(), lr=self.lRate)
 
         print('############## Pre-Training Phase ##############')
@@ -105,7 +107,10 @@ class PT4Rec(GraphRecommender):
             for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size)):
                 user_idx, pos_idx, neg_idx = batch
                 cl_loss = pre_trained_model.cal_cl_loss([user_idx,pos_idx])
-                batch_loss =  cl_loss
+                query_emb, item_emb = model_sec(user_idx, pos_idx)
+                
+                cl_loss_sec = model_sec.cal_cl_loss(pos_idx)
+                batch_loss =  (cl_loss + cl_loss_sec) / 2
                 # Backward and optimize
                 optimizer.zero_grad()
                 batch_loss.backward()
@@ -210,6 +215,7 @@ class PT4Rec(GraphRecommender):
                 
                 # 第二阶段 不继续训练对比学习权重
                 batch_loss =  (rec_loss + rec_loss_sec) / 2 + l2_reg_loss(self.reg, user_emb, pos_item_emb)
+                # batch_loss = rec_loss + l2_reg_loss(self.reg, user_emb, pos_item_emb) #终端3
                 
                 # Backward and optimize
                 
@@ -303,4 +309,5 @@ class Prompts_Generator(nn.Module):
         prompts = self.activation(prompts)
         
         return prompts
-    
+
+
