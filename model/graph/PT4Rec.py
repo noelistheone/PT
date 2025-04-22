@@ -15,7 +15,8 @@ import numpy as np
 from model.graph.XSimGCL import XSimGCL_Encoder
 from model.graph.SimGCL import SimGCL_Encoder
 from model.graph.SELFRec import DNN_Encoder
-
+from sklearn.cluster import KMeans
+from model.graph.PGA_DRL import PGA_DRL
 
 # 重写prompts生成方式 train和save
 class PT4Rec(GraphRecommender):
@@ -28,11 +29,13 @@ class PT4Rec(GraphRecommender):
         prompt_size = int(args['-prompt_size'])
         self.user_prompt_num = int(args['-user_prompt_num'])
         self.pretrain_model = args['-pretrain_model']
-        
-
+        self.dropout_rate = 0.3
+        self.dropout = nn.Dropout(self.dropout_rate)
         self.user_prompt_H = True
         self.user_prompt_M = True
         self.user_prompt_R = True
+        self.unlearning = PromptUnlearningProjector(self.emb_size)
+        # self.pga_model = PGA_DRL(self.emb_size, self.n_layers, self.dropout_rate, reg_weight = 1e-5, gamma = 0.99, device='cuda:0', dataset = self.data)        
 
         if self.pretrain_model == 'XSimGCL':
             self.eps = 0.2
@@ -64,7 +67,8 @@ class PT4Rec(GraphRecommender):
         #     print('No pretrained model, start pre-training...')
 
         pre_trained_model = self.model.cuda()
-        model_sec = self.model_besides.cuda()
+        # pre_trained_model_pga = self.pga_model.cuda()
+        # model_sec = self.model_besides.cuda()
         optimizer = torch.optim.Adam(pre_trained_model.parameters(), lr=self.lRate)
 
         print('############## Pre-Training Phase ##############')
@@ -72,11 +76,13 @@ class PT4Rec(GraphRecommender):
             for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size)):
                 user_idx, pos_idx, neg_idx = batch
                 rec_user_emb, rec_item_emb, cl_user_emb, cl_item_emb  = pre_trained_model(True)
-                cl_loss = pre_trained_model.cal_cl_loss([user_idx,pos_idx],rec_user_emb,cl_user_emb,rec_item_emb,cl_item_emb)
-                query_emb, item_emb = model_sec(user_idx, pos_idx)
                 
-                cl_loss_sec = model_sec.cal_cl_loss(pos_idx)
-                batch_loss =  (cl_loss + cl_loss_sec) / 2
+                cl_loss = pre_trained_model.cal_cl_loss([user_idx,pos_idx],rec_user_emb,cl_user_emb,rec_item_emb,cl_item_emb)
+                # query_emb, item_emb = model_sec(user_idx, pos_idx)
+                # pga_loss = pre_trained_model_pga.calculate_loss(user_idx, pos_idx, neg_idx)
+                # cl_loss_sec = model_sec.cal_cl_loss(pos_idx)
+                # batch_loss =  (cl_loss + cl_loss_sec) / 2
+                batch_loss = cl_loss #终端4
                 # Backward and optimize
                 optimizer.zero_grad()
                 batch_loss.backward()
@@ -98,6 +104,7 @@ class PT4Rec(GraphRecommender):
         #     print('No pretrained model, start pre-training...')
 
         pre_trained_model = self.model.cuda()
+        model_sec = self.model_besides.cuda()
         optimizer = torch.optim.Adam(pre_trained_model.parameters(), lr=self.lRate)
 
         print('############## Pre-Training Phase ##############')
@@ -105,7 +112,10 @@ class PT4Rec(GraphRecommender):
             for n, batch in enumerate(next_batch_pairwise(self.data, self.batch_size)):
                 user_idx, pos_idx, neg_idx = batch
                 cl_loss = pre_trained_model.cal_cl_loss([user_idx,pos_idx])
-                batch_loss =  cl_loss
+                query_emb, item_emb = model_sec(user_idx, pos_idx)
+                
+                cl_loss_sec = model_sec.cal_cl_loss(pos_idx)
+                batch_loss =  (cl_loss + cl_loss_sec) / 2
                 # Backward and optimize
                 optimizer.zero_grad()
                 batch_loss.backward()
@@ -156,14 +166,12 @@ class PT4Rec(GraphRecommender):
         user_profiles, item_profiles = torch.split(all_embeddings, [self.data.user_num, self.data.item_num])
         return user_profiles, item_profiles
 
-    def loss_fn(self, p, z):  # negative cosine similarity
-        return 1 - F.cosine_similarity(p, z.detach(), dim=-1).mean()
 
-    def get_loss(self, u_online, u_target, i_online, i_target):
-        
-        loss_ui = self.loss_fn(u_online, i_target)/2
-        loss_iu = self.loss_fn(i_online, u_target)/2
-        return loss_ui + loss_iu
+    def add_noise(self, emb, noise_std=0.02):
+        noise = torch.randn_like(emb) * noise_std
+        return emb + noise
+
+
 
     def train(self):
         if self.pretrain_model == 'XSimGCL':
@@ -183,33 +191,29 @@ class PT4Rec(GraphRecommender):
                 # self.u_target_his = torch.randn((self.data.user_num, self.emb_size), requires_grad=False).cuda()
                 # self.i_target_his = torch.randn((self.data.item_num, self.emb_size), requires_grad=False).cuda()
                 prompted_user_emb, prompted_item_emb = self.generate_prompts(user_emb, item_emb)
+                prompted_user_emb = self.unlearning(prompted_user_emb, user_emb)
+                prompted_user_emb = self.IFPU_unlearning(prompted_user_emb, user_emb)
+                
                 user_idx, pos_idx, neg_idx = batch
+                
                 # rec_user_emb, rec_item_emb = model()
                 rec_user_emb = prompted_user_emb
                 rec_item_emb = prompted_item_emb
                 
-                # with torch.no_grad():
-                    
-                #     u_target, i_target = self.u_target_his.clone()[user_idx], self.i_target_his.clone()[pos_idx]
-                #     u_target.detach()
-                #     i_target.detach()
-                #     #
-                #     u_target = u_target * 0.05 + rec_user_emb[user_idx].data * (1. - 0.05)
-                #     i_target = i_target * 0.05 + rec_item_emb[pos_idx].data * (1. - 0.05)
-                #     #
-                #     self.u_target_his[user_idx, :] = rec_user_emb[user_idx].clone()
-                #     self.i_target_his[pos_idx, :] = rec_item_emb[pos_idx].clone()
-
+                
                 
                 
 
                 user_emb, pos_item_emb, neg_item_emb = rec_user_emb[user_idx], rec_item_emb[pos_idx], rec_item_emb[neg_idx]
+                # cl_loss = self.contrastive_loss(user_emb, pos_item_emb)
                 rec_loss_sec = batch_softmax_loss(user_emb, pos_item_emb, 0.2)
+                # pga_loss = self.pga_model.cal_bpr_loss(user_idx, pos_idx, neg_idx)
+                # rec_loss = bpr_loss(clustered_user_emb[user_idx], clustered_item_emb[pos_idx], clustered_item_emb[neg_idx])
                 rec_loss = bpr_loss(user_emb, pos_item_emb, neg_item_emb)
-                # sf_loss = self.get_loss(self.predictor(rec_user_emb[user_idx]), u_target, self.predictor(rec_item_emb[pos_idx]), i_target)
                 
                 # 第二阶段 不继续训练对比学习权重
                 batch_loss =  (rec_loss + rec_loss_sec) / 2 + l2_reg_loss(self.reg, user_emb, pos_item_emb)
+                # batch_loss = rec_loss + l2_reg_loss(self.reg, user_emb, pos_item_emb) #终端3
                 
                 # Backward and optimize
                 
@@ -219,6 +223,7 @@ class PT4Rec(GraphRecommender):
 
                 if n % 100==0:
                     print('training:', epoch + 1, 'batch', n, 'rec_loss:', rec_loss.item())#, 'cl_loss', cl_loss.item())
+                    
             with torch.no_grad():
                 user_emb, self.item_emb = self.model()
                 prompted_user_emb, prompted_item_emb = self.generate_prompts(user_emb, self.item_emb)
@@ -251,6 +256,20 @@ class PT4Rec(GraphRecommender):
         u = self.data.get_user_id(u)
         score = torch.matmul(self.user_emb[u], self.item_emb.transpose(0, 1))
         return score.cpu().numpy()
+
+    def drop_embedding_dims(self, emb, drop_prob=0.1):
+        if not emb.requires_grad:
+            return emb
+        mask = (torch.rand_like(emb) > drop_prob).float()
+        return emb * mask
+
+    def IFPU_unlearning(self, prompted_emb, base_emb):
+        importance_score = (prompted_emb - base_emb).pow(2)
+        gate = torch.sigmoid(-importance_score)  # 高影响 -> gate 趋近于 0
+        cleaned_emb = prompted_emb * gate + base_emb * (1 - gate)
+        return cleaned_emb
+
+    
     
     def generate_prompts(self, user_emb, item_emb):
         user_prompts = []
@@ -273,7 +292,19 @@ class PT4Rec(GraphRecommender):
 
         return prompted_user_emb, item_emb
 
+class PromptUnlearningProjector(nn.Module):
+    def __init__(self, emb_dim):
+        super().__init__()
+        self.prompt_proj = nn.Linear(emb_dim, emb_dim).to('cuda:0')
 
+    def forward(self, prompted_emb, base_emb):
+        # 得到prompt影响的方向
+        prompt_effect = self.prompt_proj(prompted_emb - base_emb)  # 预测被prompt影响的维度分量
+        # 用残差去掉它
+        cleaned_emb = prompted_emb - prompt_effect
+        return cleaned_emb
+
+    
 class Attention(nn.Module):
     def __init__(self, prompt_size, prompt_num):
         super(Attention, self).__init__()
@@ -301,6 +332,9 @@ class Prompts_Generator(nn.Module):
         prompts = inputs
         prompts = self.W(prompts)
         prompts = self.activation(prompts)
+
+        # 添加高斯噪声扰动
         
+
         return prompts
-    
+
