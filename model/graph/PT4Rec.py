@@ -16,7 +16,7 @@ from model.graph.XSimGCL import XSimGCL_Encoder
 from model.graph.SimGCL import SimGCL_Encoder
 from model.graph.SELFRec import DNN_Encoder
 
-from model.graph.PGA_DRL import PGA_DRL
+
 
 # 重写prompts生成方式 train和save
 class PT4Rec(GraphRecommender):
