@@ -25,6 +25,7 @@ class ModelConf(object):
                     try:
                         key,value=line.strip().split('=')
                         self.config[key]=value
+                        
                     except ValueError:
                         print('config file is not in the correct format! Error Line:%d' % ind)
 
